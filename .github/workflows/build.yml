@@ -1,0 +1,91 @@
+name: Build
+
+on:
+  push:
+  schedule:
+    - cron: 0 0 * * 0
+
+permissions:
+  actions: write
+  contents: write
+
+jobs:
+  cmp:
+    uses: WaterLemons2k/.github/.github/workflows/compare.yml@main
+    with:
+      new: $(curl -fs https://api.github.com/repos/ffmpeg/ffmpeg/tags | jq -r 'first(.[] | select(.name | test("^n[0-9]+[.][0-9]+[.][0-9]+$"))) | .name | ltrimstr("n")')
+
+  keep-scheduled-workflow-activity:
+    needs: cmp
+    if: needs.cmp.outputs.changed == 'false'
+    uses: WaterLemons2k/scheduled-workflow-activity-action/.github/workflows/reusable.yml@v2
+
+  build:
+    needs: cmp
+    if: needs.cmp.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Init
+        run: |
+          VERSION='${{ needs.cmp.outputs.version }}'
+          ARCHIVE="ffmpeg-$VERSION.tar.xz"
+          URL="https://ffmpeg.org/releases/$ARCHIVE"
+          echo "SRC=ffmpeg-$VERSION" >>"$GITHUB_ENV"
+
+          sudo apt-get install nasm gcc-mingw-w64-x86-64
+          curl -fLO "$URL"
+          tar -xf "$ARCHIVE"
+
+      - name: Build
+        run: |
+          ARCH='x86_64'
+          TARGET='mingw32'
+          TOOLCHAIN='x86_64-w64-mingw32-'
+
+          "$SRC"/configure \
+          	--extra-version=ffconcat \
+          	--arch="$ARCH" \
+          	--target-os="$TARGET" \
+          	--cross-prefix="$TOOLCHAIN" \
+          	\
+          	--disable-everything \
+          	--disable-autodetect \
+          	\
+          	--enable-demuxer=concat \
+          	--enable-demuxer=mov \
+          	--enable-muxer=mp4 \
+          	--enable-protocol=file \
+          	--enable-bsf=h264_mp4toannexb \
+          	--enable-bsf=hevc_mp4toannexb \
+          	\
+          	--disable-filters \
+          	--disable-avdevice \
+          	--disable-swscale \
+          	--disable-swresample \
+          	\
+          	--disable-network \
+          	--disable-doc \
+          	--disable-debug \
+          	\
+          	--enable-small
+
+          make -j "$(nproc)"
+          mv ffmpeg.exe ffmpeg-$TARGET-$ARCH.exe
+
+      - name: Release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ needs.cmp.outputs.version }}
+          files: ffmpeg-*.exe
+
+  git:
+    needs: [cmp, build]
+    if: needs.cmp.outputs.changed == 'true'
+    uses: WaterLemons2k/.github/.github/workflows/git.yml@main
+    with:
+      run: |
+        VERSION=${{ needs.cmp.outputs.version }}
+        echo "$VERSION" >VERSION
+      commit_message: ${{ needs.cmp.outputs.version }}
